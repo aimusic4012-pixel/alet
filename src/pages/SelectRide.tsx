@@ -1,5 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useRef, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence, PanInfo } from 'framer-motion';
 import { X, Plus, Calendar, Users, User, Briefcase, ChevronDown } from 'lucide-react';
 import { MapBackground } from '../components/MapBackground';
@@ -7,6 +7,7 @@ import { PromoDetailsPanel } from '../components/PromoDetailsPanel';
 import { carTypes } from '../data/mockData';
 import { calculatePriceWithStops, getCarTypePrice } from '../utils/priceCalculation';
 import { useRideContext } from '../contexts/RideContext';
+import { getFleetOptions, FleetVehicle } from '../services/fleetService';
 
 interface SelectRideProps {
   destination: string;
@@ -30,26 +31,59 @@ export const SelectRide: React.FC<SelectRideProps> = ({
   onSelectRide
 }) => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { isRideActive, rideStatus } = useRideContext();
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // Read navigation state to determine service type
+  const { serviceType = 'ride', extraOption } = location.state || {};
 
   // Calculate base price for the trip
   const priceCalculation = calculatePriceWithStops(pickup, destination, stops);
 
-  // Create car types with calculated prices
+  // State for fleet vehicles
+  const [fleetVehicles, setFleetVehicles] = useState<FleetVehicle[]>([]);
+  const [isLoadingFleet, setIsLoadingFleet] = useState(false);
+
+  // Create car types with calculated prices (for regular rides)
   const carsWithPrices = carTypes.map(car => ({
     ...car,
     price: getCarTypePrice(priceCalculation.totalPrice, car.name),
-    originalPrice: Math.round(getCarTypePrice(priceCalculation.totalPrice, car.name) * 1.25) // 25% higher for original price
+    originalPrice: Math.round(getCarTypePrice(priceCalculation.totalPrice, car.name) * 1.25)
   }));
 
-  const [selectedCar, setSelectedCar] = useState(carsWithPrices[0]);
+  // Determine which vehicles to display
+  const displayVehicles = serviceType === 'ride' ? carsWithPrices : fleetVehicles;
+
+  const [selectedCar, setSelectedCar] = useState<any>(displayVehicles[0] || carsWithPrices[0]);
   const [showPromoDetails, setShowPromoDetails] = useState(false);
   const [selectedFilter, setSelectedFilter] = useState<FilterTab>('recommended');
   const [panelHeight, setPanelHeight] = useState(PANEL_MIN_HEIGHT);
   const [profileToggle, setProfileToggle] = useState<'personal' | 'business'>('personal');
 
   const isExpanded = panelHeight > SNAP_THRESHOLD;
+
+  // Load fleet options for logistics services
+  useEffect(() => {
+    async function loadFleet() {
+      if (serviceType !== 'ride') {
+        setIsLoadingFleet(true);
+        try {
+          const vehicles = await getFleetOptions(serviceType as any, extraOption);
+          setFleetVehicles(vehicles);
+          if (vehicles.length > 0) {
+            setSelectedCar(vehicles[0]);
+          }
+        } catch (error) {
+          console.error('Failed to load fleet:', error);
+        } finally {
+          setIsLoadingFleet(false);
+        }
+      }
+    }
+
+    loadFleet();
+  }, [serviceType, extraOption]);
 
   const promo = {
     discount: 30,
@@ -88,10 +122,14 @@ export const SelectRide: React.FC<SelectRideProps> = ({
   };
 
   const getSortedCars = () => {
-    let sorted = [...carsWithPrices];
+    let sorted = [...displayVehicles];
 
     if (selectedFilter === 'faster') {
-      sorted.sort((a, b) => parseInt(a.eta) - parseInt(b.eta));
+      sorted.sort((a, b) => {
+        const aTime = parseInt(a.eta) || 0;
+        const bTime = parseInt(b.eta) || 0;
+        return aTime - bTime;
+      });
     } else if (selectedFilter === 'cheaper') {
       sorted.sort((a, b) => a.price - b.price);
     }
@@ -298,59 +336,77 @@ export const SelectRide: React.FC<SelectRideProps> = ({
         </AnimatePresence>
 
         <div className="flex-1 overflow-y-auto px-4" style={{ WebkitOverflowScrolling: 'touch' }}>
-          <div className="space-y-3 mb-6">
-            {sortedCars.map((car, index) => (
-              <motion.button
-                key={car.id}
-                onClick={() => setSelectedCar(car)}
-                className={`w-full p-4 rounded-2xl border-2 transition-all ${
-                  selectedCar.id === car.id
-                    ? 'border-green-600 bg-green-50'
-                    : 'border-gray-200 bg-white hover:border-gray-300'
-                }`}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.05 }}
-                whileTap={{ scale: 0.98 }}
-              >
-                <div className="flex items-center space-x-4">
-                  <div className="text-2xl">{car.icon}</div>
-                  <div className="flex-1 text-left">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-bold text-gray-900">{car.name}</h3>
-                      <div className="text-right">
-                        <p className="font-bold text-gray-900">R {car.price}</p>
-                        {car.originalPrice && (
-                          <p className="text-sm text-gray-500 line-through">R {car.originalPrice}</p>
+          {isLoadingFleet ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="text-center">
+                <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                <p className="text-gray-600 text-sm">Loading vehicles...</p>
+              </div>
+            </div>
+          ) : sortedCars.length === 0 ? (
+            <div className="flex items-center justify-center py-8">
+              <p className="text-gray-600">No vehicles available</p>
+            </div>
+          ) : (
+            <div className="space-y-3 mb-6">
+              {sortedCars.map((car, index) => (
+                <motion.button
+                  key={car.id}
+                  onClick={() => setSelectedCar(car)}
+                  className={`w-full p-4 rounded-2xl border-2 transition-all ${
+                    selectedCar?.id === car.id
+                      ? 'border-green-600 bg-green-50'
+                      : 'border-gray-200 bg-white hover:border-gray-300'
+                  }`}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: index * 0.05 }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  <div className="flex items-center space-x-4">
+                    <div className="text-2xl">{car.icon}</div>
+                    <div className="flex-1 text-left">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-bold text-gray-900">{car.name}</h3>
+                        <div className="text-right">
+                          <p className="font-bold text-gray-900">R {car.price}</p>
+                          {car.originalPrice && (
+                            <p className="text-sm text-gray-500 line-through">R {car.originalPrice}</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-4 mt-1">
+                        <span className="text-sm text-gray-600">{car.eta}</span>
+                        {typeof car.capacity === 'number' && (
+                          <div className="flex items-center space-x-1">
+                            <Users size={14} className="text-gray-500" />
+                            <span className="text-sm text-gray-600">{car.capacity}</span>
+                          </div>
                         )}
+                        {typeof car.capacity === 'string' && (
+                          <span className="text-sm text-gray-600">{car.capacity}</span>
+                        )}
+                        <span className="text-sm text-gray-600">{car.description}</span>
                       </div>
+                      {car.badge && (
+                        <span
+                          className={`inline-block mt-2 px-2 py-1 rounded-full text-xs font-bold ${
+                            car.badge === 'FASTER' || car.badge === 'RECOMMENDED'
+                              ? 'bg-green-100 text-green-800'
+                              : car.badge === 'CHEAPER'
+                              ? 'bg-blue-100 text-blue-800'
+                              : 'bg-purple-100 text-purple-800'
+                          }`}
+                        >
+                          {car.badge}
+                        </span>
+                      )}
                     </div>
-                    <div className="flex items-center space-x-4 mt-1">
-                      <span className="text-sm text-gray-600">{car.eta}</span>
-                      <div className="flex items-center space-x-1">
-                        <Users size={14} className="text-gray-500" />
-                        <span className="text-sm text-gray-600">{car.capacity}</span>
-                      </div>
-                      <span className="text-sm text-gray-600">{car.description}</span>
-                    </div>
-                    {car.badge && (
-                      <span
-                        className={`inline-block mt-2 px-2 py-1 rounded-full text-xs font-bold ${
-                          car.badge === 'FASTER'
-                            ? 'bg-green-100 text-green-800'
-                            : car.badge === 'CHEAPER'
-                            ? 'bg-blue-100 text-blue-800'
-                            : 'bg-purple-100 text-purple-800'
-                        }`}
-                      >
-                        {car.badge}
-                      </span>
-                    )}
                   </div>
-                </div>
-              </motion.button>
-            ))}
-          </div>
+                </motion.button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="flex-shrink-0 bg-white border-t border-gray-200 px-4 py-3">
